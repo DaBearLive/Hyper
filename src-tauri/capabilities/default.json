@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-set-size",
+    "core:window:allow-inner-size",
+    "core:window:allow-scale-factor",
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging",
+    "opener:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "fs:default",
+    "fs:allow-exists",
+    "fs:allow-read-text-file",
+    "fs:allow-write-text-file"
+  ]
+}
