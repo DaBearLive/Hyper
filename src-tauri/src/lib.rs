@@ -540,10 +540,13 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
             });
         }
         let mut progress_emitted = false;
+        let mut stderr_text = String::new();
         if let Some(err) = stderr {
             let reader = BufReader::new(err);
             for line in reader.lines() {
                 if let Ok(l) = line {
+                    stderr_text.push_str(&l);
+                    stderr_text.push('\n');
                     // Parse percent like " 12.3%" or "[download] 12.3%"
                     if let Some(pct_idx) = l.find('%') {
                         // Find start of number before %
@@ -556,7 +559,6 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
                             progress_emitted = true;
                         }
                     }
-                    // Also emit raw line for debugging if needed
                 }
             }
         }
@@ -566,18 +568,44 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
             success = true;
             break;
         } else {
-            // Try to get stderr for error (we already consumed it, so we need to capture it differently)
-            // For simplicity, read from a temp file or just use a generic error
-            // Instead, we re-run without progress to get error string? Simpler: assume bot error and continue
-            // We'll try to read the error by running a quick check without progress
-            // For now, treat as bot error and continue to next variant if progress was emitted (meaning it was downloading)
-            // If no progress was emitted, it's likely a bot/auth error, try next
-            last_err = format!("yt-dlp failed for {}", name);
+            let trimmed = stderr_text.trim();
+            // Prefer real yt-dlp output over generic "failed for X"
+            let candidate = if !trimmed.is_empty() {
+                let first = trimmed.lines().find(|l| !l.trim().is_empty()).unwrap_or(trimmed);
+                if first.len() > 500 { format!("{}…", &first[..500]) } else { first.to_string() }
+            } else {
+                format!("yt-dlp failed for {} (no output)", name)
+            };
+            // Keep the first meaningful error as last_err, don't overwrite with cookie-browser noise unless it's the only output
+            if last_err.is_empty() || !last_err.contains("cookies-from-browser") || candidate.contains("sign in") || candidate.contains("not a bot") {
+                last_err = candidate;
+            }
             if !progress_emitted {
-                // Likely bot error, try next variant
+                // No download started — likely bot/auth or browser not installed, try next strategy
+                // Don't surface cookie-browser-not-found noise as final error if we haven't tried all
+                if trimmed.contains("cookies-from-browser") || trimmed.contains("not found") || is_bot_error(trimmed) {
+                    continue;
+                }
                 continue;
             } else {
-                // Progress was shown but still failed (maybe network), return error
+                // Progress was shown but yt-dlp still exited non-zero — check if file was actually created
+                // (e.g., ffmpeg merge warning, or yt-dlp wrote file then failed on thumbnail)
+                let has_recent_file = std::fs::read_dir(&path).ok().map(|entries| {
+                    entries.flatten().any(|e| {
+                        let p = e.path();
+                        p.is_file()
+                            && ["mp4", "mkv", "webm", "mov", "avi", "mp3", "m4a", "opus"]
+                                .iter()
+                                .any(|ext| p.extension().map(|ex| ex.to_string_lossy().to_lowercase() == *ext).unwrap_or(false))
+                            && p.metadata().map(|m| m.len() > 1024).unwrap_or(false)
+                    })
+                }).unwrap_or(false);
+                if has_recent_file {
+                    // Treat as success — file exists, continue to metadata embed / thumbnail
+                    save_strategy(&name);
+                    success = true;
+                    break;
+                }
                 return Err(last_err);
             }
         }
