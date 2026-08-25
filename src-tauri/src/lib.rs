@@ -3,6 +3,20 @@ use std::process::{Command, Stdio};
 use std::io::{BufRead, BufReader};
 use tauri::Emitter;
 
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
+
+fn hyper_cmd<S: AsRef<std::ffi::OsStr>>(program: S) -> Command {
+    #[cfg(windows)]
+    {
+        let mut cmd = Command::new(program);
+        cmd.creation_flags(0x08000000);
+        return cmd;
+    }
+    #[cfg(not(windows))]
+    Command::new(program)
+}
+
 fn use_base64(data: &[u8]) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(data)
@@ -75,7 +89,7 @@ fn downloaded_ffmpeg_bin() -> Option<PathBuf> {
 }
 
 fn system_ffmpeg_exists() -> bool {
-    Command::new(bundled_bin_name("ffmpeg"))
+    hyper_cmd(bundled_bin_name("ffmpeg"))
         .arg("-version")
         .output()
         .map(|o| o.status.success())
@@ -146,18 +160,18 @@ fn ensure_ffmpeg() -> Result<String, String> {
     {
         let url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
         let tmp = std::env::temp_dir().join("ffmpeg-win.zip");
-        let dl = Command::new("curl").args(["-L", "-o", &tmp.to_string_lossy(), url]).output()
+        let dl = hyper_cmd("curl").args(["-L", "-o", &tmp.to_string_lossy(), url]).output()
             .map_err(|e| format!("curl not found: {}", e))?;
         if !dl.status.success() {
             return Err(format!("Failed to download ffmpeg: {}", String::from_utf8_lossy(&dl.stderr)));
         }
         // Try unzip via powershell or unzip
-        let out = Command::new("powershell")
+        let out = hyper_cmd("powershell")
             .args(["-Command", &format!("Expand-Archive -Force '{}' '{}'", tmp.to_string_lossy(), out_dir.to_string_lossy())])
             .output();
         if out.is_err() || !out.unwrap().status.success() {
             // fallback to unzip
-            let _ = Command::new("unzip").args(["-o", &tmp.to_string_lossy(), "-d", &out_dir.to_string_lossy()]).output();
+            let _ = hyper_cmd("unzip").args(["-o", &tmp.to_string_lossy(), "-d", &out_dir.to_string_lossy()]).output();
         }
         // Find ffmpeg.exe inside
         if let Ok(entries) = std::fs::read_dir(&out_dir) {
@@ -184,12 +198,12 @@ fn ensure_ffmpeg() -> Result<String, String> {
     {
         let url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz";
         let tmp = std::env::temp_dir().join("ffmpeg-linux.tar.xz");
-        let dl = Command::new("curl").args(["-L", "-o", &tmp.to_string_lossy(), url]).output()
+        let dl = hyper_cmd("curl").args(["-L", "-o", &tmp.to_string_lossy(), url]).output()
             .map_err(|e| format!("curl failed: {}", e))?;
         if !dl.status.success() {
             return Err(format!("Failed to download ffmpeg: {}", String::from_utf8_lossy(&dl.stderr)));
         }
-        let _ = Command::new("tar").args(["-xf", &tmp.to_string_lossy(), "-C", &std::env::temp_dir().to_string_lossy()]).output();
+        let _ = hyper_cmd("tar").args(["-xf", &tmp.to_string_lossy(), "-C", &std::env::temp_dir().to_string_lossy()]).output();
         // Find extracted dir
         if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
             for e in entries.flatten() {
@@ -200,8 +214,8 @@ fn ensure_ffmpeg() -> Result<String, String> {
                     if src_ff.exists() {
                         let _ = std::fs::copy(&src_ff, out_dir.join("ffmpeg"));
                         let _ = std::fs::copy(&src_probe, out_dir.join("ffprobe"));
-                        let _ = Command::new("chmod").args(["+x", &out_dir.join("ffmpeg").to_string_lossy()]).output();
-                        let _ = Command::new("chmod").args(["+x", &out_dir.join("ffprobe").to_string_lossy()]).output();
+                        let _ = hyper_cmd("chmod").args(["+x", &out_dir.join("ffmpeg").to_string_lossy()]).output();
+                        let _ = hyper_cmd("chmod").args(["+x", &out_dir.join("ffprobe").to_string_lossy()]).output();
                         let _ = std::fs::remove_dir_all(&p);
                         break;
                     }
@@ -267,7 +281,7 @@ fn run_ytdlp(bin: &str, base_args: &[String]) -> Result<String, String> {
 
     let mut last_err = String::new();
     for (name, extra) in ordered {
-        let mut cmd = Command::new(bin);
+        let mut cmd = hyper_cmd(bin);
         cmd.args(base_args).args(&extra);
         let output = match cmd.output() {
             Ok(o) => o,
@@ -442,7 +456,7 @@ fn embed_url_metadata(video: &std::path::Path, url: &str, ffmpeg_exe: &str) -> R
         args.push("+faststart".to_string());
     }
     args.push(tmp.to_string_lossy().to_string());
-    let out = Command::new(ffmpeg_exe).args(&args).output().map_err(|e| e.to_string())?;
+    let out = hyper_cmd(ffmpeg_exe).args(&args).output().map_err(|e| e.to_string())?;
     if out.status.success() && tmp.exists() {
         let _ = std::fs::remove_file(video);
         std::fs::rename(&tmp, video).map_err(|e| e.to_string())?;
@@ -507,7 +521,7 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
         let mut full_args = args.clone();
         full_args.extend(extra.clone());
         full_args.push(url.clone());
-        let mut child = match Command::new(&bin).args(&full_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        let mut child = match hyper_cmd(&bin).args(&full_args).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
             Ok(c) => c,
             Err(e) => { last_err = e.to_string(); continue; }
         };
@@ -587,7 +601,7 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
                     let video = entry.path();
                     if let Ok(meta) = std::fs::metadata(&video) {
                         if meta.len() > limit {
-                            let dur: f64 = Command::new(&ffprobe_exe)
+                            let dur: f64 = hyper_cmd(&ffprobe_exe)
                                 .args(["-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", &video.to_string_lossy()])
                                 .output().ok()
                                 .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
@@ -612,11 +626,11 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
                                     let mut p1 = vec!["-y".to_string(), "-loglevel".to_string(), "quiet".to_string(), "-i".to_string(), video.to_string_lossy().to_string()];
                                     if let Some(s) = scale { p1.extend(["-vf".to_string(), s.to_string()]); }
                                     p1.extend(["-c:v".to_string(), "libx264".to_string(), "-b:v".to_string(), vb.clone(), "-pass".to_string(), "1".to_string(), "-passlogfile".to_string(), pass_log.to_string_lossy().to_string(), "-an".to_string(), "-f".to_string(), "mp4".to_string(), tmp_out.to_string_lossy().to_string()]);
-                                    let _ = Command::new(&ffmpeg_exe).args(&p1).output();
+                                    let _ = hyper_cmd(&ffmpeg_exe).args(&p1).output();
                                     let mut p2 = vec!["-y".to_string(), "-loglevel".to_string(), "quiet".to_string(), "-i".to_string(), video.to_string_lossy().to_string()];
                                     if let Some(s) = scale { p2.extend(["-vf".to_string(), s.to_string()]); }
                                     p2.extend(["-c:v".to_string(), "libx264".to_string(), "-b:v".to_string(), vb.clone(), "-pass".to_string(), "2".to_string(), "-passlogfile".to_string(), pass_log.to_string_lossy().to_string(), "-c:a".to_string(), "aac".to_string(), "-b:a".to_string(), "128k".to_string(), "-movflags".to_string(), "+faststart".to_string(), tmp_out.to_string_lossy().to_string()]);
-                                    let enc = Command::new(&ffmpeg_exe).args(&p2).output();
+                                    let enc = hyper_cmd(&ffmpeg_exe).args(&p2).output();
                                     let out_size = std::fs::metadata(&tmp_out).map(|m| m.len()).unwrap_or(u64::MAX);
                                     if enc.is_ok() && out_size <= limit {
                                         let _ = std::fs::remove_file(&video);
@@ -674,7 +688,7 @@ async fn download_video(window: tauri::Window, url: String, quality: String, sav
                         } else {
                             "ffmpeg".to_string()
                         };
-                        let _ = Command::new(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &entry.path().to_string_lossy(), "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", &thumb_path.to_string_lossy()]).output();
+                        let _ = hyper_cmd(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &entry.path().to_string_lossy(), "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", &thumb_path.to_string_lossy()]).output();
                     }
                 }
             }
@@ -754,7 +768,7 @@ fn list_downloads() -> Result<Vec<serde_json::Value>, String> {
             } else {
                 // fallback: try to extract from embedded metadata (purl/comment)
                 let ffprobe_bin = resolve_tool("ffprobe", &None);
-                if let Ok(out) = Command::new(&ffprobe_bin).args(["-v", "quiet", "-print_format", "json", "-show_entries", "format_tags=comment,description,purl,URL,url", &path.to_string_lossy()]).output() {
+                if let Ok(out) = hyper_cmd(&ffprobe_bin).args(["-v", "quiet", "-print_format", "json", "-show_entries", "format_tags=comment,description,purl,URL,url", &path.to_string_lossy()]).output() {
                     if out.status.success() {
                         let txt = String::from_utf8_lossy(&out.stdout);
                         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&txt) {
@@ -790,10 +804,10 @@ fn list_downloads() -> Result<Vec<serde_json::Value>, String> {
                 found.unwrap_or_else(|| bundled_bin_name("ffmpeg"))
             };
             // 1. embedded cover art (stream after main video)
-            let _ = Command::new(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &path.to_string_lossy(), "-map", "0:v:1", "-frames:v", "1", "-q:v", "5", "-vf", "scale=320:-2", &thumb_path.to_string_lossy()]).output();
+            let _ = hyper_cmd(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &path.to_string_lossy(), "-map", "0:v:1", "-frames:v", "1", "-q:v", "5", "-vf", "scale=320:-2", &thumb_path.to_string_lossy()]).output();
             // 2. fallback: frame at 1s
             if !thumb_path.exists() {
-                let _ = Command::new(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &path.to_string_lossy(), "-ss", "00:00:01", "-vframes", "1", "-q:v", "5", "-vf", "scale=320:-2", &thumb_path.to_string_lossy()]).output();
+                let _ = hyper_cmd(&ffmpeg_exe).args(["-y", "-loglevel", "quiet", "-i", &path.to_string_lossy(), "-ss", "00:00:01", "-vframes", "1", "-q:v", "5", "-vf", "scale=320:-2", &thumb_path.to_string_lossy()]).output();
             }
         }
         // Embed as data URL - asset protocol can be unreliable in WebKit
@@ -822,11 +836,11 @@ fn list_downloads() -> Result<Vec<serde_json::Value>, String> {
 #[tauri::command]
 fn open_downloads_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
-    { Command::new("explorer").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    { hyper_cmd("explorer").arg(&path).spawn().map_err(|e| e.to_string())?; }
     #[cfg(target_os = "linux")]
-    { Command::new("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    { hyper_cmd("xdg-open").arg(&path).spawn().map_err(|e| e.to_string())?; }
     #[cfg(target_os = "macos")]
-    { Command::new("open").arg(&path).spawn().map_err(|e| e.to_string())?; }
+    { hyper_cmd("open").arg(&path).spawn().map_err(|e| e.to_string())?; }
     Ok(())
 }
 
@@ -1019,7 +1033,7 @@ fn apply_accent_icon(window: &tauri::Window, hex: &str) -> Result<(), String> {
         }
     }
     for ks in ["kbuildsycoca6", "kbuildsycoca5"] {
-        if std::process::Command::new(ks)
+        if hyper_cmd(ks)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
